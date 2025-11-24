@@ -66,7 +66,7 @@ flowchart LR
 ## 3. Repository Structure 📂
 
 ~~~text
-psp2/
+AzureContainerDemo/
 ├─ .azure-pipelines/     CI/CD pipelines (build, plan, apply, deploy)
 ├─ backend/              Node.js + TypeScript REST API
 ├─ frontend/             TypeScript SPA
