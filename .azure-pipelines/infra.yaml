@@ -1,0 +1,202 @@
+trigger: none
+
+pool:
+  name: '<yourpoolname>'
+
+variables:
+  TF_WORKING_DIR: 'infra'
+
+  # --- BACKEND CONFIGURATION ---
+  TF_BACKEND_RG: '<yourbackendresourcegroup>'
+  TF_STORAGE_ACCOUNT: 'yourstatefilestorageaccount>'
+  TF_CONTAINER_NAME: 'tfstate'
+  TF_STATE_KEY: '<yourstatefile>'
+
+  # --- ACR / IMAGES ---
+  ACR_NAME: '<youracrname>'
+  FRONTEND_IMAGE: '<yourfrontendimage>'
+  BACKEND_IMAGE: '<yourbackendimage>'
+
+stages:
+- stage: Terraform_Deploy
+  displayName: "Terraform Deploy Infra (Two-Stage + Build)"
+  jobs:
+  - job: terraform
+    displayName: "Terraform Init / Apply / Build / Apply"
+    steps:
+    - checkout: self
+
+    # ------------------------------------------------------------------
+    # Task 1: Export SPN credentials as ARM_* env vars for Terraform
+    # ------------------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Export SPN to ARM_* variables'
+      inputs:
+        azureSubscription: '<yourserviceconnection>'
+        scriptType: 'ps'
+        addSpnToEnvironment: true
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $CLIENT_ID       = $env:servicePrincipalId
+          $CLIENT_SECRET   = $env:servicePrincipalKey
+          $TENANT_ID       = $env:tenantId
+          $SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+          Write-Host "##vso[task.setvariable variable=ARM_CLIENT_ID;isOutput=false]$CLIENT_ID"
+          Write-Host "##vso[task.setvariable variable=ARM_CLIENT_SECRET;isOutput=true;issecret=true]$CLIENT_SECRET"
+          Write-Host "##vso[task.setvariable variable=ARM_TENANT_ID;isOutput=false]$TENANT_ID"
+          Write-Host "##vso[task.setvariable variable=ARM_SUBSCRIPTION_ID;isOutput=false]$SUBSCRIPTION_ID"
+
+    # ------------------------------------------------------------------
+    # Task 2: Make sure Microsoft.App is registered (for Container Apps)
+    # ------------------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Register Microsoft.App provider'
+      inputs:
+        azureSubscription: '<yourserviceconnection>'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          Write-Host "Registering Microsoft.App provider..."
+          az provider register --namespace Microsoft.App --wait
+          Write-Host "Microsoft.App provider registered."
+
+    # ------------------------------------------------------------------
+    # Task 3: Terraform init (remote backend)
+    # ------------------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Terraform init'
+      inputs:
+        azureSubscription: '<yourserviceconnection>'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          cd $(TF_WORKING_DIR)
+
+          Write-Host "== Terraform init =="
+          terraform init -input=false `
+            -backend-config="resource_group_name=$(TF_BACKEND_RG)" `
+            -backend-config="storage_account_name=$(TF_STORAGE_ACCOUNT)" `
+            -backend-config="container_name=$(TF_CONTAINER_NAME)" `
+            -backend-config="key=$(TF_STATE_KEY)"
+
+    # ------------------------------------------------------------------
+    # Task 4: Terraform Apply (Stage 1 - Infra + placeholder images)
+    # ------------------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Terraform apply (Stage 1 - infra & placeholder)'
+      inputs:
+        azureSubscription: '<yourserviceconnection>'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          cd $(TF_WORKING_DIR)
+
+          Write-Host "== Terraform apply (Stage 1 - placeholder) =="
+          terraform apply -auto-approve -no-color `
+            -var="deploy_template=false" `
+            -var="frontend_image=$(FRONTEND_IMAGE)" `
+            -var="backend_image=$(BACKEND_IMAGE)"
+
+    # ---------------------------------------------------------------------------------------------------------------------
+    # Task 5: Build & Push Docker images via WSL Docker (tcp://localhost:2375) since my build server is a win2022 server
+    # ---------------------------------------------------------------------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Docker build & push frontend/backend'
+      inputs:
+        azureSubscription: '<yourserviceconnection>'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Tell Docker CLI to use the WSL Docker daemon
+          $env:DOCKER_HOST = "tcp://localhost:2375"
+
+          $acrName       = "$(ACR_NAME)"
+          $frontendImage = "$(FRONTEND_IMAGE)"
+          $backendImage  = "$(BACKEND_IMAGE)"
+
+          Write-Host "== ACR login =="
+          az acr login --name $acrName
+
+          Write-Host "== Building frontend image =="
+          docker build `
+            -f "$(System.DefaultWorkingDirectory)/frontend/Dockerfile" `
+            -t $frontendImage `
+            "$(System.DefaultWorkingDirectory)/frontend"
+
+          Write-Host "== Pushing frontend image =="
+          docker push $frontendImage
+
+          Write-Host "== Building backend image =="
+          docker build `
+            -f "$(System.DefaultWorkingDirectory)/backend/Dockerfile" `
+            -t $backendImage `
+            "$(System.DefaultWorkingDirectory)/backend"
+
+          Write-Host "== Pushing backend image =="
+          docker push $backendImage
+
+    # ------------------------------------------------------------------
+    # Task 6: ACR DNS warm-up (NEEDED so Stage 2 doesn’t fail)
+    # ------------------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Validate ACR & DNS before Stage 2'
+      inputs:
+        azureSubscription: '<yourserviceconnection>'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $ErrorActionPreference = "Continue"
+
+          $acrName = "$(ACR_NAME)"
+          $fqdn    = "$acrName.azurecr.io"
+
+          Write-Host "== Verifying ACR exists =="
+          az acr show -n $acrName -o table
+
+          Write-Host "== Checking that repos exist =="
+          az acr repository list -n $acrName -o table
+
+          $maxAttempts  = 10
+          $delaySeconds = 30
+
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+            Write-Host "[$i/$maxAttempts] Checking DNS resolution for $fqdn ..."
+
+            # Run nslookup safely without causing PowerShell "error" noise
+            $nsOutput = & nslookup $fqdn 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+
+            Write-Host $nsOutput
+
+            if ($exitCode -eq 0 -and $nsOutput -notmatch "Non-existent domain") {
+              Write-Host "DNS for $fqdn looks good."
+              break
+            }
+
+            if ($i -eq $maxAttempts) {
+              Write-Error "DNS for $fqdn still failing after $maxAttempts attempts."
+              exit 1
+            }
+
+            Write-Host "DNS not ready yet. Sleeping $delaySeconds seconds..."
+            Start-Sleep -Seconds $delaySeconds
+          }
+
+    # ------------------------------------------------------------------
+    # Task 7: Terraform Apply (Stage 2 - switch to ACR images + registry)
+    # ------------------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Terraform apply (Stage 2 - ACR images)'
+      inputs:
+        azureSubscription: '<yourserviceconnection>'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          cd $(TF_WORKING_DIR)
+
+          Write-Host "== Terraform apply (Stage 2 - ACR images) =="
+          terraform apply -auto-approve -no-color `
+            -var="deploy_template=true" `
+            -var="frontend_image=$(FRONTEND_IMAGE)" `
+            -var="backend_image=$(BACKEND_IMAGE)"
