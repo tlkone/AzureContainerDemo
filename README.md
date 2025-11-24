@@ -294,5 +294,5 @@ See the `LICENSE` file for full details.
 ---
 
 <div style="background-color:#eff6ff; color:#1e3a8a; padding:12px 16px; border-radius:8px; border:1px solid #bfdbfe; margin-top:16px;">
-<b>Summary:</b> PSP2 is meant to look and feel like a real production workload – with Terraform, CI/CD, secret management, observability, and clean documentation – so that it stands out on GitHub and in interviews as a serious cloud engineering project.
+<b>Summary:</b> AzureContainerDemo is meant to look and feel like a real production workload – with Terraform, CI/CD, secret management, observability, and clean documentation – so that it stands out on GitHub and in interviews as a serious cloud engineering project.
 </div>
