@@ -74,12 +74,6 @@ AzureContainerDemo/
 └─ docs/                 Architecture, pipelines, infra, and operations docs
 ~~~
 
-Each main folder includes its own README to help new contributors ramp quickly.
-
-<div style="background-color:#ecfdf5; color:#022c22; padding:10px 14px; border-radius:6px; margin-top:10px; border:1px solid #6ee7b7;">
-<b>Tip:</b> Treat each folder like its own mini-project with entry docs, consistent naming, and repeatable commands.
-</div>
-
 ---
 
 ## 4. Infrastructure (Terraform) 🧱
