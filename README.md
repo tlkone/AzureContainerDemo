@@ -71,7 +71,6 @@ AzureContainerDemo/
 ├─ backend/              Node.js + TypeScript REST API
 ├─ frontend/             TypeScript SPA
 ├─ infra/                Terraform infrastructure-as-code
-└─ docs/                 Architecture, pipelines, infra, and operations docs
 ~~~
 
 ---
